@@ -68,7 +68,7 @@ resource "aws_route_table" "private" {
   }
 }
 
-# Add Route to Internet Gateway in Public Route Table
+# Add Public Route (0.0.0.0/0 -> IGW)
 resource "aws_route" "public_route" {
   route_table_id         = aws_route_table.public.id
   destination_cidr_block = "0.0.0.0/0"
