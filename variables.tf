@@ -13,6 +13,10 @@ variable "vpc_cidr" {
   type        = string
 }
 
+variable "vpc_name" {
+  description = "VPC Name"
+  type        = string
+}
 
 variable "azs" {
   description = "List of availability zones"
