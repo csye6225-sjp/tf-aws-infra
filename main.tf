@@ -91,79 +91,84 @@ resource "aws_route_table_association" "private_association" {
   route_table_id = aws_route_table.private.id
 }
 
+# Application Security Group for web application instances
+resource "aws_security_group" "app_sg" {
+  name        = "app-security-group"
+  description = "Security group for web application instances"
+  vpc_id      = aws_vpc.main.id
 
+  ingress {
+    description = "Allow SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-# # Application Security Group
-# resource "aws_security_group" "app_sg" {
-#   name        = "app-security-group"
-#   description = "Security group for web application instances"
-#   vpc_id      = aws_vpc.main.id
+  ingress {
+    description = "Allow HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#   ingress {
-#     description = "Allow SSH"
-#     from_port   = 22
-#     to_port     = 22
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  ingress {
+    description = "Allow HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#   ingress {
-#     description = "Allow HTTP"
-#     from_port   = 80
-#     to_port     = 80
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  ingress {
+    description = "Allow application traffic"
+    from_port   = var.app_port
+    to_port     = var.app_port
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#   ingress {
-#     description = "Allow HTTPS"
-#     from_port   = 443
-#     to_port     = 443
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#   ingress {
-#     description = "Allow application traffic"
-#     from_port   = var.app_port
-#     to_port     = var.app_port
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  tags = {
+    Name = "App-Security-Group"
+  }
+}
+data "aws_ami" "latest" {
+  most_recent = true
+  owners      = ["self", "amazon"]
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+# EC2 Instance for your web application
+resource "aws_instance" "app_instance" {
+  ami           = var.custom_ami || data.aws_ami.latest.id
+  instance_type = "t2.micro"
+  subnet_id     = element(aws_subnet.public.*.id, 0)
 
-#   egress {
-#     description = "Allow all outbound traffic"
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  key_name = null
 
-#   tags = {
-#     Name = "App-Security-Group"
-#   }
-# }
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
 
-# # EC2 Instance
-# resource "aws_instance" "app_instance" {
-#   ami           = var.custom_ami
-#   instance_type = "t2.micro"
-#   subnet_id     = element(aws_subnet.public.*.id, 0)
+  root_block_device {
+    volume_size           = 25
+    volume_type           = "gp2"
+    delete_on_termination = true
+  }
 
-#   key_name = var.aws_key_name != "" ? var.aws_key_name : null
+  associate_public_ip_address = true
+  disable_api_termination     = false
 
-#   vpc_security_group_ids = [aws_security_group.app_sg.id]
-
-#   root_block_device {
-#     volume_size           = 25
-#     volume_type           = "gp2"
-#     delete_on_termination = true
-#   }
-
-#   associate_public_ip_address = true
-#   disable_api_termination     = false
-
-#   tags = {
-#     Name = "App-EC2-Instance"
-#   }
-# }
+  tags = {
+    Name = "App-EC2-Instance"
+  }
+}
