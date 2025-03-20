@@ -337,10 +337,6 @@ resource "aws_instance" "app_instance" {
     # Restrict read permissions for the env file
     chmod 600 /etc/csye6225.env
 
-    # If desired, automatically start or enable your systemd service:
-    # systemctl daemon-reload
-    # systemctl enable csye6225.service
-    # systemctl start csye6225.service
   EOF
 
   tags = {
