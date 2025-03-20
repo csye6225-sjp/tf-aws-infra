@@ -141,17 +141,168 @@ resource "aws_security_group" "app_sg" {
     Name = "App-Security-Group"
   }
 }
-data "aws_ami" "latest" {
-  most_recent = true
-  owners      = ["self", "amazon"]
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+
+# Database Security Group RDS instances
+resource "aws_security_group" "db_sg" {
+  name        = "db-security-group"
+  description = "Security group for RDS, only allows inbound from app_sg"
+  vpc_id      = aws_vpc.main.id
+
+  # Ingress: only the application SG can access the DB port
+  ingress {
+    description     = "DB port from App SG"
+    from_port       = var.db_port
+    to_port         = var.db_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app_sg.id]
+  }
+
+  # Egress typically open
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "DB-Security-Group"
   }
 }
+
+# DB Subnet Group
+resource "aws_db_subnet_group" "mydb_subnet_group" {
+  name       = "mydb-subnet-group"
+  subnet_ids = aws_subnet.private[*].id
+
+  tags = {
+    Name = "MyDBSubnetGroup"
+  }
+}
+
+# DB Parameter Group
+resource "aws_db_parameter_group" "mydb_params" {
+  name        = "csye6225-db-params"
+  family      = "postgres16" # or "mysql8.0", "mariadb10.5", etc.
+  description = "Custom parameter group for CSYE6225"
+
+  # Example parameter override
+  parameter {
+    name  = "log_min_duration_statement"
+    value = "1000"
+  }
+}
+
+# RDS Instance
+resource "aws_db_instance" "mydb" {
+  identifier             = "csye6225"
+  engine                 = var.db_engine # "postgres", "mysql", "mariadb"
+  engine_version         = "16"        # or version matching your engine
+  instance_class         = "db.t3.micro"
+  allocated_storage      = 20
+  db_subnet_group_name   = aws_db_subnet_group.mydb_subnet_group.name
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  publicly_accessible    = false
+  multi_az               = false
+  db_name                = "csye6225" # DB name
+  username               = var.db_user
+  password               = var.db_password
+  parameter_group_name   = aws_db_parameter_group.mydb_params.name
+
+  skip_final_snapshot = true
+
+  tags = {
+    Name = "csye6225-RDS"
+  }
+}
+
+
+# Generate a random UUID
+resource "random_uuid" "s3" {}
+
+resource "aws_s3_bucket" "attachments" {
+  # Construct the bucket name using prefix + UUID
+  bucket = "${var.s3_bucket_prefix}-${random_uuid.s3.result}"
+
+  force_destroy = true
+  acl           = "private"
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+    }
+  }
+
+  lifecycle_rule {
+    id      = "transition-to-standard-ia"
+    enabled = true
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
+
+  tags = {
+    Name        = "CSYE6225-Attachments-Bucket"
+    Environment = "dev"
+  }
+}
+
+data "aws_iam_policy_document" "allow_s3_bucket_access" {
+  statement {
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+      # Possibly "s3:ListBucket" if you need to list objects
+    ]
+    resources = [
+      aws_s3_bucket.attachments.arn,
+      "${aws_s3_bucket.attachments.arn}/*"
+    ]
+    effect = "Allow"
+  }
+}
+
+resource "aws_iam_policy" "s3_bucket_policy" {
+  name        = "AllowS3BucketAccess"
+  description = "Policy that allows read/write access to the S3 bucket"
+  policy      = data.aws_iam_policy_document.allow_s3_bucket_access.json
+}
+
+resource "aws_iam_role" "ec2_s3_role" {
+  name               = "EC2S3AccessRole"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+}
+
+data "aws_iam_policy_document" "ec2_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+    effect = "Allow"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_s3_attach" {
+  role       = aws_iam_role.ec2_s3_role.name
+  policy_arn = aws_iam_policy.s3_bucket_policy.arn
+}
+
+resource "aws_iam_instance_profile" "ec2_s3_profile" {
+  name = "EC2S3InstanceProfile"
+  role = aws_iam_role.ec2_s3_role.name
+}
+
+
 # EC2 Instance for your web application
 resource "aws_instance" "app_instance" {
-  ami           = var.custom_ami || data.aws_ami.latest.id
+  ami           = var.custom_ami
   instance_type = "t2.micro"
   subnet_id     = element(aws_subnet.public.*.id, 0)
 
@@ -167,6 +318,30 @@ resource "aws_instance" "app_instance" {
 
   associate_public_ip_address = true
   disable_api_termination     = false
+
+  # Associate the IAM Instance Profile so that the EC2 can access S3 without hardcoded credentials
+  iam_instance_profile = aws_iam_instance_profile.ec2_s3_profile.name
+
+  # Provide a user_data script that writes your DB/S3 environment variables at first boot
+  user_data = <<-EOF
+    #!/bin/bash
+    
+    echo "PORT=8080" >> /etc/csye6225.env
+    echo "DB_HOST=${aws_db_instance.mydb.address}" >> /etc/csye6225.env
+    echo "DB_USER=${var.db_user}" >> /etc/csye6225.env
+    echo "DB_PASSWORD=${var.db_password}" >> /etc/csye6225.env
+    echo "DB_NAME=csye6225" >> /etc/csye6225.env
+    echo "S3_BUCKET=${aws_s3_bucket.attachments.bucket}" >> /etc/csye6225.env
+    echo "AWS_REGION=${var.aws_region}" >> /etc/csye6225.env
+
+    # Restrict read permissions for the env file
+    chmod 600 /etc/csye6225.env
+
+    # If desired, automatically start or enable your systemd service:
+    # systemctl daemon-reload
+    # systemctl enable csye6225.service
+    # systemctl start csye6225.service
+  EOF
 
   tags = {
     Name = "App-EC2-Instance"

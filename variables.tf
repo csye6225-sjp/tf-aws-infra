@@ -50,3 +50,30 @@ variable "aws_key_name" {
   default     = ""
 }
 
+variable "s3_bucket_prefix" {
+  type    = string
+  default = "csye6225"
+}
+
+variable "db_user" {
+  type        = string
+  description = "Username for the RDS database"
+  default     = "csye6225"
+}
+
+variable "db_password" {
+  type        = string
+  description = "Password for the RDS database"
+  # for security, do NOT give a default; pass via tfvars or environment
+}
+variable "db_engine" {
+  type        = string
+  description = "RDS engine type (postgres, mysql, mariadb)"
+  default     = "postgres"
+}
+
+variable "db_port" {
+  type        = number
+  description = "Database port (5432 for Postgres, 3306 for MySQL/MariaDB)"
+  default     = 5432
+}
