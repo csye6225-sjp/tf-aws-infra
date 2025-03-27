@@ -197,7 +197,7 @@ resource "aws_db_parameter_group" "mydb_params" {
 resource "aws_db_instance" "mydb" {
   identifier             = "csye6225"
   engine                 = var.db_engine # "postgres", "mysql", "mariadb"
-  engine_version         = "16"        # or version matching your engine
+  engine_version         = "16"          # or version matching your engine
   instance_class         = "db.t3.micro"
   allocated_storage      = 20
   db_subnet_group_name   = aws_db_subnet_group.mydb_subnet_group.name
@@ -273,10 +273,10 @@ resource "aws_iam_policy" "s3_bucket_policy" {
   policy      = data.aws_iam_policy_document.allow_s3_bucket_access.json
 }
 
-resource "aws_iam_role" "ec2_s3_role" {
-  name               = "EC2S3AccessRole"
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
-}
+# resource "aws_iam_role" "ec2_s3_role" {
+#   name               = "EC2S3AccessRole"
+#   assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+# }
 
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
@@ -289,15 +289,62 @@ data "aws_iam_policy_document" "ec2_assume_role" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "ec2_s3_attach" {
-  role       = aws_iam_role.ec2_s3_role.name
+resource "aws_iam_role" "ec2_role" {
+  name               = "EC2CombinedRole"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+}
+
+# CloudWatch Agent policy
+resource "aws_iam_policy" "cloudwatch_agent_policy" {
+  name        = "CloudWatchAgentPolicy"
+  description = "Policy for CloudWatch Agent to send logs and metrics"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "cloudwatch:PutMetricData"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "s3_attach" {
+  role       = aws_iam_role.ec2_role.name
   policy_arn = aws_iam_policy.s3_bucket_policy.arn
 }
 
-resource "aws_iam_instance_profile" "ec2_s3_profile" {
-  name = "EC2S3InstanceProfile"
-  role = aws_iam_role.ec2_s3_role.name
+resource "aws_iam_role_policy_attachment" "cw_agent_attach" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.cloudwatch_agent_policy.arn
 }
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "EC2CombinedInstanceProfile"
+  role = aws_iam_role.ec2_role.name
+}
+
+# resource "aws_iam_role_policy_attachment" "ec2_s3_attach" {
+#   role       = aws_iam_role.ec2_s3_role.name
+#   policy_arn = aws_iam_policy.s3_bucket_policy.arn
+# }
+
+# resource "aws_iam_instance_profile" "ec2_s3_profile" {
+#   name = "EC2S3InstanceProfile"
+#   role = aws_iam_role.ec2_s3_role.name
+# }
 
 
 # EC2 Instance for your web application
@@ -319,8 +366,8 @@ resource "aws_instance" "app_instance" {
   associate_public_ip_address = true
   disable_api_termination     = false
 
-  # Associate the IAM Instance Profile so that the EC2 can access S3 without hardcoded credentials
-  iam_instance_profile = aws_iam_instance_profile.ec2_s3_profile.name
+  # Associate the IAM Instance Profile so that the EC2 can access S3 and cloudwatch without hardcoded credentials
+  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
 
   # Provide a user_data script that writes your DB/S3 environment variables at first boot
   user_data = <<-EOF
