@@ -380,7 +380,7 @@ resource "aws_instance" "app_instance" {
     echo "DB_NAME=csye6225" >> /etc/csye6225.env
     echo "S3_BUCKET=${aws_s3_bucket.attachments.bucket}" >> /etc/csye6225.env
     echo "AWS_REGION=${var.aws_region}" >> /etc/csye6225.env
-
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/cloudwatch-agent-config.json -s
     # Restrict read permissions for the env file
     chmod 600 /etc/csye6225.env
 
