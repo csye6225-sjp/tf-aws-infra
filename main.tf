@@ -121,13 +121,13 @@ resource "aws_security_group" "app_sg" {
   #   cidr_blocks = ["0.0.0.0/0"]
   # }
 
-  # ingress {
-  #   description = "Allow application traffic"
-  #   from_port   = var.app_port
-  #   to_port     = var.app_port
-  #   protocol    = "tcp"
-  #   cidr_blocks = ["0.0.0.0/0"]
-  # }
+  ingress {
+    description = "Allow application traffic"
+    from_port   = var.app_port
+    to_port     = var.app_port
+    protocol    = "tcp"
+    security_groups = [ aws_security_group.lb_sg.id ]
+  }
 
   egress {
     description = "Allow all outbound traffic"
@@ -176,16 +176,7 @@ resource "aws_security_group" "lb_sg" {
   }
 }
 
-# Allow LB to access the app on app_port
-resource "aws_security_group_rule" "app_allow_lb" {
-  type                     = "ingress"
-  from_port                = var.app_port
-  to_port                  = var.app_port
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.app_sg.id
-  source_security_group_id = aws_security_group.lb_sg.id
-  description              = "Allow application traffic from LB"
-}
+
 # Database Security Group RDS instances
 resource "aws_security_group" "db_sg" {
   name        = "db-security-group"
@@ -451,7 +442,9 @@ resource "aws_autoscaling_group" "webapp_asg" {
   desired_capacity    = 3
   min_size            = 3
   max_size            = 5
-  vpc_zone_identifier = aws_subnet.private[*].id
+  # Temporarily use public subnets for SSH access
+  vpc_zone_identifier = aws_subnet.public[*].id
+
   launch_template {
     id      = aws_launch_template.webapp_lt.id
     version = "$Latest"
@@ -505,8 +498,8 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm_high" {
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 5
-  alarm_description   = "Scale up if CPU > 5%"
+  threshold           = 10
+  alarm_description   = "Scale up if CPU > 10%"
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
   }
@@ -521,7 +514,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm_low" {
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 3
+  threshold           = 5
   alarm_description   = "Scale down if CPU < 3%"
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
