@@ -77,3 +77,19 @@ variable "db_port" {
   description = "Database port (5432 for Postgres, 3306 for MySQL/MariaDB)"
   default     = 5432
 }
+
+variable "instance_type" {
+  description = "EC2 instance type for Auto Scaling (e.g., t2.micro)"
+  type        = string
+  default     = "t2.micro"
+}
+
+variable "route53_zone_id" {
+  description = "The ID of the Route53 hosted zone for your domain (e.g., dev.sahanajprakash.me)"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "The domain name to be used in the Route53 record (e.g., dev.sahanajprakash.me or demo.sahanajprakash.me)"
+  type        = string
+}
