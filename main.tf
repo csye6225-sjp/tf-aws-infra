@@ -104,6 +104,48 @@ resource "aws_security_group" "app_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  #removing this for adding load balancer 
+  # ingress {
+  #   description = "Allow HTTP"
+  #   from_port   = 80
+  #   to_port     = 80
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  # ingress {
+  #   description = "Allow HTTPS"
+  #   from_port   = 443
+  #   to_port     = 443
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  # ingress {
+  #   description = "Allow application traffic"
+  #   from_port   = var.app_port
+  #   to_port     = var.app_port
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "App-Security-Group"
+  }
+}
+# Security group for the Load Balancer
+resource "aws_security_group" "lb_sg" {
+  name        = "lb-security-group"
+  description = "Security group for the Application Load Balancer"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     description = "Allow HTTP"
@@ -121,14 +163,6 @@ resource "aws_security_group" "app_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "Allow application traffic"
-    from_port   = var.app_port
-    to_port     = var.app_port
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     description = "Allow all outbound traffic"
     from_port   = 0
@@ -138,10 +172,20 @@ resource "aws_security_group" "app_sg" {
   }
 
   tags = {
-    Name = "App-Security-Group"
+    Name = "LB-Security-Group"
   }
 }
 
+# Allow LB to access the app on app_port
+resource "aws_security_group_rule" "app_allow_lb" {
+  type                     = "ingress"
+  from_port                = var.app_port
+  to_port                  = var.app_port
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.app_sg.id
+  source_security_group_id = aws_security_group.lb_sg.id
+  description              = "Allow application traffic from LB"
+}
 # Database Security Group RDS instances
 resource "aws_security_group" "db_sg" {
   name        = "db-security-group"
@@ -346,33 +390,18 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 #   role = aws_iam_role.ec2_s3_role.name
 # }
 
+# ======================================
+# Launch Template for Auto Scaling
+# ======================================
+resource "aws_launch_template" "webapp_lt" {
+  name_prefix   = "csye6225-webapp-"
+  image_id      = var.custom_ami
+  instance_type = var.instance_type
+  key_name      = var.aws_key_name
+  # associate_public_ip_address = true
 
-# EC2 Instance for your web application
-resource "aws_instance" "app_instance" {
-  ami           = var.custom_ami
-  instance_type = "t2.micro"
-  subnet_id     = element(aws_subnet.public.*.id, 0)
-
-  key_name = null
-
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
-
-  root_block_device {
-    volume_size           = 25
-    volume_type           = "gp2"
-    delete_on_termination = true
-  }
-
-  associate_public_ip_address = true
-  disable_api_termination     = false
-
-  # Associate the IAM Instance Profile so that the EC2 can access S3 and cloudwatch without hardcoded credentials
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-
-  # Provide a user_data script that writes your DB/S3 environment variables at first boot
-  user_data = <<-EOF
+  user_data = base64encode(<<-EOF
     #!/bin/bash
-    
     echo "PORT=8080" >> /etc/csye6225.env
     echo "DB_HOST=${aws_db_instance.mydb.address}" >> /etc/csye6225.env
     echo "DB_USER=${var.db_user}" >> /etc/csye6225.env
@@ -380,13 +409,227 @@ resource "aws_instance" "app_instance" {
     echo "DB_NAME=csye6225" >> /etc/csye6225.env
     echo "S3_BUCKET=${aws_s3_bucket.attachments.bucket}" >> /etc/csye6225.env
     echo "AWS_REGION=${var.aws_region}" >> /etc/csye6225.env
-    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/cloudwatch-agent-config.json -s
-    # Restrict read permissions for the env file
-    chmod 600 /etc/csye6225.env
 
+    # Ensure log file exists
+    touch /var/log/webapp.log
+    chown csye6225:csye6225 /var/log/webapp.log
+
+    # Start CloudWatch Agent (assuming config is already in the AMI)
+    sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+         -a fetch-config -m ec2 -c file:/opt/cloudwatch-agent-config.json -s
+
+    # Start the application
+    /usr/bin/node /opt/csye6225/webapp/src/server.js
   EOF
+  )
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
+
+  network_interfaces {
+    device_index                = 0
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.app_sg.id]
+  }
+
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   tags = {
-    Name = "App-EC2-Instance"
+    Name = "CSYE6225-Webapp-LaunchTemplate"
   }
 }
+
+# ======================================
+# Auto Scaling Group for Web Application
+# ======================================
+resource "aws_autoscaling_group" "webapp_asg" {
+  name                = "csye6225_asg"
+  desired_capacity    = 3
+  min_size            = 3
+  max_size            = 5
+  vpc_zone_identifier = aws_subnet.private[*].id
+  launch_template {
+    id      = aws_launch_template.webapp_lt.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "CSYE6225-Webapp"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "AutoScalingGroup"
+    value               = "csye6225_asg"
+    propagate_at_launch = true
+  }
+
+  target_group_arns = [aws_lb_target_group.webapp_tg.arn]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ======================================
+# Auto Scaling Policies & CloudWatch Alarms
+# ======================================
+resource "aws_autoscaling_policy" "scale_up" {
+  name                   = "csye6225_scale_up"
+  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  adjustment_type        = "ChangeInCapacity"
+  scaling_adjustment     = 1
+  cooldown               = 60
+  policy_type            = "SimpleScaling"
+}
+
+resource "aws_autoscaling_policy" "scale_down" {
+  name                   = "csye6225_scale_down"
+  autoscaling_group_name = aws_autoscaling_group.webapp_asg.name
+  adjustment_type        = "ChangeInCapacity"
+  scaling_adjustment     = -1
+  cooldown               = 60
+  policy_type            = "SimpleScaling"
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_alarm_high" {
+  alarm_name          = "csye6225_cpu_high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 5
+  alarm_description   = "Scale up if CPU > 5%"
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+  }
+  alarm_actions = [aws_autoscaling_policy.scale_up.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_alarm_low" {
+  alarm_name          = "csye6225_cpu_low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 3
+  alarm_description   = "Scale down if CPU < 3%"
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
+  }
+  alarm_actions = [aws_autoscaling_policy.scale_down.arn]
+}
+
+# ======================================
+# Application Load Balancer (ALB)
+# ======================================
+resource "aws_lb" "webapp_alb" {
+  name               = "csye6225-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.lb_sg.id]
+  subnets            = aws_subnet.public[*].id
+
+  tags = {
+    Name = "CSYE6225-ALB"
+  }
+}
+
+resource "aws_lb_target_group" "webapp_tg" {
+  name     = "csye6225-tg"
+  port     = var.app_port
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+
+  health_check {
+    path                = "/healthz"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "CSYE6225-TG"
+  }
+}
+
+resource "aws_lb_listener" "webapp_listener" {
+  load_balancer_arn = aws_lb.webapp_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.webapp_tg.arn
+  }
+}
+
+# ======================================
+# Route53 DNS Record for the ALB
+# ======================================
+resource "aws_route53_record" "webapp_alias" {
+  zone_id = var.route53_zone_id # Hosted Zone ID for your (dev|demo).sahanajprakash.me
+  name    = var.domain_name     # e.g., "dev.sahanajprakash.me" or "demo.sahanajprakash.me"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.webapp_alb.dns_name
+    zone_id                = aws_lb.webapp_alb.zone_id
+    evaluate_target_health = true
+  }
+}
+# EC2 Instance for your web application
+# resource "aws_instance" "app_instance" {
+#   ami           = var.custom_ami
+#   instance_type = "t2.micro"
+#   subnet_id     = element(aws_subnet.public.*.id, 0)
+
+#   key_name = null
+
+#   vpc_security_group_ids = [aws_security_group.app_sg.id]
+
+#   root_block_device {
+#     volume_size           = 25
+#     volume_type           = "gp2"
+#     delete_on_termination = true
+#   }
+
+#   associate_public_ip_address = true
+#   disable_api_termination     = false
+
+#   # Associate the IAM Instance Profile so that the EC2 can access S3 and cloudwatch without hardcoded credentials
+#   iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+
+#   # Provide a user_data script that writes your DB/S3 environment variables at first boot
+#   user_data = <<-EOF
+#     #!/bin/bash
+
+#     echo "PORT=8080" >> /etc/csye6225.env
+#     echo "DB_HOST=${aws_db_instance.mydb.address}" >> /etc/csye6225.env
+#     echo "DB_USER=${var.db_user}" >> /etc/csye6225.env
+#     echo "DB_PASSWORD=${var.db_password}" >> /etc/csye6225.env
+#     echo "DB_NAME=csye6225" >> /etc/csye6225.env
+#     echo "S3_BUCKET=${aws_s3_bucket.attachments.bucket}" >> /etc/csye6225.env
+#     echo "AWS_REGION=${var.aws_region}" >> /etc/csye6225.env
+#     sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/cloudwatch-agent-config.json -s
+#     # Restrict read permissions for the env file
+#     chmod 600 /etc/csye6225.env
+
+#   EOF
+
+#   tags = {
+#     Name = "App-EC2-Instance"
+#   }
+# }
