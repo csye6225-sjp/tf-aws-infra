@@ -122,11 +122,11 @@ resource "aws_security_group" "app_sg" {
   # }
 
   ingress {
-    description = "Allow application traffic"
-    from_port   = var.app_port
-    to_port     = var.app_port
-    protocol    = "tcp"
-    security_groups = [ aws_security_group.lb_sg.id ]
+    description     = "Allow application traffic"
+    from_port       = var.app_port
+    to_port         = var.app_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lb_sg.id]
   }
 
   egress {
@@ -241,8 +241,13 @@ resource "aws_db_instance" "mydb" {
   multi_az               = false
   db_name                = "csye6225" # DB name
   username               = var.db_user
-  password               = var.db_password
+  password               = random_password.db_password.result
   parameter_group_name   = aws_db_parameter_group.mydb_params.name
+  kms_key_id             = aws_kms_key.rds_key.arn
+  storage_encrypted      = true
+
+
+
 
   skip_final_snapshot = true
 
@@ -250,6 +255,28 @@ resource "aws_db_instance" "mydb" {
     Name = "csye6225-RDS"
   }
 }
+
+# Auto-generate password
+resource "random_password" "db_password" {
+  length  = 16
+  special = true
+}
+
+# Store in Secrets Manager using custom KMS key
+resource "aws_secretsmanager_secret" "db_secret" {
+  name                    = "csye6225-db-password"
+  kms_key_id              = aws_kms_key.secrets_key.arn
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "db_secret_value" {
+  secret_id     = aws_secretsmanager_secret.db_secret.id
+  secret_string = random_password.db_password.result
+}
+# EC2 IAM Role Policy for accessing secrets
+
+
+# Attach the policy to the EC2 instance role
 
 
 # Generate a random UUID
@@ -265,10 +292,12 @@ resource "aws_s3_bucket" "attachments" {
   server_side_encryption_configuration {
     rule {
       apply_server_side_encryption_by_default {
-        sse_algorithm = "AES256"
+        sse_algorithm     = "aws:kms"
+        kms_master_key_id = aws_kms_key.s3_key.arn
       }
     }
   }
+
 
   lifecycle_rule {
     id      = "transition-to-standard-ia"
@@ -289,10 +318,10 @@ resource "aws_s3_bucket" "attachments" {
 data "aws_iam_policy_document" "allow_s3_bucket_access" {
   statement {
     actions = [
+      "s3:ListBucket",
       "s3:PutObject",
       "s3:GetObject",
-      "s3:DeleteObject",
-      # Possibly "s3:ListBucket" if you need to list objects
+      "s3:DeleteObject"
     ]
     resources = [
       aws_s3_bucket.attachments.arn,
@@ -302,16 +331,39 @@ data "aws_iam_policy_document" "allow_s3_bucket_access" {
   }
 }
 
+
 resource "aws_iam_policy" "s3_bucket_policy" {
   name        = "AllowS3BucketAccess"
   description = "Policy that allows read/write access to the S3 bucket"
   policy      = data.aws_iam_policy_document.allow_s3_bucket_access.json
 }
 
-# resource "aws_iam_role" "ec2_s3_role" {
-#   name               = "EC2S3AccessRole"
-#   assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
-# }
+
+resource "aws_iam_policy" "secrets_access_policy" {
+  name = "AllowReadCSYE6225Secret"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ],
+        Resource = aws_secretsmanager_secret.db_secret.arn
+      },
+      {
+        Sid    = "KMSDecryptAccess",
+        Effect = "Allow",
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ],
+        Resource = aws_kms_key.secrets_key.arn
+      }
+    ]
+  })
+}
 
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
@@ -365,25 +417,18 @@ resource "aws_iam_role_policy_attachment" "cw_agent_attach" {
   role       = aws_iam_role.ec2_role.name
   policy_arn = aws_iam_policy.cloudwatch_agent_policy.arn
 }
+resource "aws_iam_role_policy_attachment" "attach_secrets_policy" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.secrets_access_policy.arn
+}
+
 
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = "EC2CombinedInstanceProfile"
   role = aws_iam_role.ec2_role.name
 }
 
-# resource "aws_iam_role_policy_attachment" "ec2_s3_attach" {
-#   role       = aws_iam_role.ec2_s3_role.name
-#   policy_arn = aws_iam_policy.s3_bucket_policy.arn
-# }
 
-# resource "aws_iam_instance_profile" "ec2_s3_profile" {
-#   name = "EC2S3InstanceProfile"
-#   role = aws_iam_role.ec2_s3_role.name
-# }
-
-# ======================================
-# Launch Template for Auto Scaling
-# ======================================
 resource "aws_launch_template" "webapp_lt" {
   name_prefix   = "csye6225-webapp-"
   image_id      = var.custom_ami
@@ -393,10 +438,17 @@ resource "aws_launch_template" "webapp_lt" {
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
+
+    sudo snap install aws-cli --classic
     echo "PORT=8080" >> /etc/csye6225.env
     echo "DB_HOST=${aws_db_instance.mydb.address}" >> /etc/csye6225.env
     echo "DB_USER=${var.db_user}" >> /etc/csye6225.env
-    echo "DB_PASSWORD=${var.db_password}" >> /etc/csye6225.env
+    DB_PASSWORD=$(aws secretsmanager get-secret-value \
+      --secret-id csye6225-db-password \
+      --query SecretString \
+      --output text \
+      --region ${var.aws_region})
+    echo "DB_PASSWORD=$DB_PASSWORD" >> /etc/csye6225.env
     echo "DB_NAME=csye6225" >> /etc/csye6225.env
     echo "S3_BUCKET=${aws_s3_bucket.attachments.bucket}" >> /etc/csye6225.env
     echo "AWS_REGION=${var.aws_region}" >> /etc/csye6225.env
@@ -413,6 +465,18 @@ resource "aws_launch_template" "webapp_lt" {
     /usr/bin/node /opt/csye6225/webapp/src/server.js
   EOF
   )
+  # block_device_mappings {
+  #   device_name = "/dev/xvda"
+
+  #   ebs {
+  #     volume_size           = 25
+  #     volume_type           = "gp2"
+  #     delete_on_termination = true
+  #     encrypted             = true
+  #     kms_key_id            = aws_kms_key.ec2_key.arn
+  #   }
+  # }
+
 
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_profile.name
@@ -438,10 +502,10 @@ resource "aws_launch_template" "webapp_lt" {
 # Auto Scaling Group for Web Application
 # ======================================
 resource "aws_autoscaling_group" "webapp_asg" {
-  name                = "csye6225_asg"
-  desired_capacity    = 3
-  min_size            = 3
-  max_size            = 5
+  name             = "csye6225_asg1"
+  desired_capacity = 1
+  min_size         = 1
+  max_size         = 5
   # Temporarily use public subnets for SSH access
   vpc_zone_identifier = aws_subnet.public[*].id
 
@@ -499,7 +563,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm_high" {
   period              = 60
   statistic           = "Average"
   threshold           = 10
-  alarm_description   = "Scale up if CPU > 10%"
+  alarm_description   = "Scale up if CPU > 5%"
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
   }
@@ -514,7 +578,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm_low" {
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 5
+  threshold           = 3
   alarm_description   = "Scale down if CPU < 3%"
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
@@ -560,8 +624,11 @@ resource "aws_lb_target_group" "webapp_tg" {
 
 resource "aws_lb_listener" "webapp_listener" {
   load_balancer_arn = aws_lb.webapp_alb.arn
-  port              = 80
-  protocol          = "HTTP"
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+
+  certificate_arn = var.acm_certificate_arn
 
   default_action {
     type             = "forward"

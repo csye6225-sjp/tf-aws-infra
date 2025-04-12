@@ -61,11 +61,11 @@ variable "db_user" {
   default     = "csye6225"
 }
 
-variable "db_password" {
-  type        = string
-  description = "Password for the RDS database"
-  # for security, do NOT give a default; pass via tfvars or environment
-}
+# variable "db_password" {
+#   type        = string
+#   description = "Password for the RDS database"
+#   # for security, do NOT give a default; pass via tfvars or environment
+# }
 variable "db_engine" {
   type        = string
   description = "RDS engine type (postgres, mysql, mariadb)"
@@ -91,5 +91,10 @@ variable "route53_zone_id" {
 
 variable "domain_name" {
   description = "The domain name to be used in the Route53 record (e.g., dev.sahanajprakash.me or demo.sahanajprakash.me)"
+  type        = string
+}
+
+variable "acm_certificate_arn" {
+  description = "The ARN of the ACM certificate for HTTPS"
   type        = string
 }
