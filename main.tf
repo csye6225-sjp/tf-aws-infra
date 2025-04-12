@@ -491,7 +491,7 @@ resource "aws_launch_template" "webapp_lt" {
   EOF
   )
   block_device_mappings {
-    device_name = "/dev/xvda"
+    device_name = "/dev/sda1"
 
     ebs {
       volume_size           = 25
@@ -527,7 +527,7 @@ resource "aws_launch_template" "webapp_lt" {
 # Auto Scaling Group for Web Application
 # ======================================
 resource "aws_autoscaling_group" "webapp_asg" {
-  name             = "csye6225_asg1"
+  name             = "csye6225_asg"
   desired_capacity = 1
   min_size         = 1
   max_size         = 5
