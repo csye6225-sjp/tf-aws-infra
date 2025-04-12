@@ -675,6 +675,8 @@ resource "aws_route53_record" "webapp_alias" {
     evaluate_target_health = true
   }
 }
+
+#EC2 instance before moving it to launch template
 # EC2 Instance for your web application
 # resource "aws_instance" "app_instance" {
 #   ami           = var.custom_ami
