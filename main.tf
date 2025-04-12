@@ -407,6 +407,31 @@ resource "aws_iam_policy" "cloudwatch_agent_policy" {
     ]
   })
 }
+resource "aws_iam_policy" "ec2_kms_s3_policy" {
+  name = "EC2S3KMSAccess"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ],
+        Resource = aws_kms_key.s3_key.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "attach_ec2_kms_s3_policy" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.ec2_kms_s3_policy.arn
+}
+
 
 resource "aws_iam_role_policy_attachment" "s3_attach" {
   role       = aws_iam_role.ec2_role.name
@@ -465,17 +490,17 @@ resource "aws_launch_template" "webapp_lt" {
     /usr/bin/node /opt/csye6225/webapp/src/server.js
   EOF
   )
-  # block_device_mappings {
-  #   device_name = "/dev/xvda"
+  block_device_mappings {
+    device_name = "/dev/xvda"
 
-  #   ebs {
-  #     volume_size           = 25
-  #     volume_type           = "gp2"
-  #     delete_on_termination = true
-  #     encrypted             = true
-  #     kms_key_id            = aws_kms_key.ec2_key.arn
-  #   }
-  # }
+    ebs {
+      volume_size           = 25
+      volume_type           = "gp2"
+      delete_on_termination = true
+      encrypted             = true
+      kms_key_id            = aws_kms_key.ec2_key.arn
+    }
+  }
 
 
   iam_instance_profile {
