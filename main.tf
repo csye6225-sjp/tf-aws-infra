@@ -528,8 +528,8 @@ resource "aws_launch_template" "webapp_lt" {
 # ======================================
 resource "aws_autoscaling_group" "webapp_asg" {
   name             = "csye6225_asg"
-  desired_capacity = 1
-  min_size         = 1
+  desired_capacity = 3
+  min_size         = 3
   max_size         = 5
   # Temporarily use public subnets for SSH access
   vpc_zone_identifier = aws_subnet.public[*].id
@@ -587,7 +587,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm_high" {
   namespace           = "AWS/EC2"
   period              = 60
   statistic           = "Average"
-  threshold           = 10
+  threshold           = 5
   alarm_description   = "Scale up if CPU > 5%"
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.webapp_asg.name
